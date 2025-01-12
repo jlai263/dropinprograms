@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Mississauga Drop-In Programs</title>
+  <!-- Lunr for text searching -->
+  <script src="https://cdn.jsdelivr.net/npm/lunr@2.3.9/lunr.min.js"></script>
+  <!-- Our custom styles -->
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Mississauga Drop-In Programs</h1>
+    <a href="https://ca.apm.activecommunities.com/activemississauga/ActiveNet_Calendar?defaultCalendarId=1" 
+       class="button" target="_blank">
+      View Official Calendar
+    </a>
+  </header>
+
+  <main>
+    <!-- Filters Container -->
+    <div class="filters">
+      <div class="filter-group">
+        <label for="searchBox">Search:</label>
+        <input type="text" id="searchBox" placeholder="e.g. Fun Skate" />
+      </div>
+
+      <div class="filter-group">
+        <label for="centerFilter">Center:</label>
+        <select id="centerFilter">
+          <option value="">-- All Centers --</option>
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <label for="facilityFilter">Facility:</label>
+        <select id="facilityFilter">
+          <option value="">-- All Facilities --</option>
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <label for="dateFrom">Start date:</label>
+        <input type="date" id="dateFrom" />
+      </div>
+
+      <div class="filter-group">
+        <label for="dateTo">End date:</label>
+        <input type="date" id="dateTo" />
+      </div>
+    </div>
+
+    <!-- Table for Results -->
+    <table id="resultsTable">
+      <thead>
+        <tr>
+          <th>Activity</th>
+          <th>Day / Date</th>
+          <th>Time</th>
+          <th>Facility</th>
+        </tr>
+      </thead>
+      <tbody id="resultsBody">
+        <!-- Populated dynamically in JS -->
+      </tbody>
+    </table>
+  </main>
+
+  <footer>
+    <p>Data courtesy of Mississauga ActiveNet</p>
+  </footer>
+
+  <script>
+    let eventsData = [];
+    let lunrIndex = null;
+
+    // Initialize on page load
+    window.addEventListener('DOMContentLoaded', init);
+
+    async function init() {
+      // 1) Fetch JSON
+      const response = await fetch('events.json');
+      eventsData = await response.json();
+
+      // 2) Precompute extra fields:
+      //    - dayDate (e.g. "Mon, Jan 6, 2025")
+      //    - timeRange (e.g. "9:00 AM – 10:00 AM")
+      eventsData.forEach((e) => {
+        const parsedStart = parseDate(e.start_time);
+        const parsedEnd   = parseDate(e.end_time);
+
+        e.dayDate   = formatDayDate(parsedStart);  // "Mon, Jan 6, 2025"
+        e.timeRange = formatTimeRange(parsedStart, parsedEnd); // "9:00 AM – 10:00 AM"
+      });
+
+      // 3) Unique centers/facilities
+      const centers = new Set();
+      const facilities = new Set();
+      eventsData.forEach(e => {
+        if (e.center_name) centers.add(e.center_name.trim());
+        if (e.facility_name) facilities.add(e.facility_name.trim());
+      });
+      populateDropdown([...centers].sort(), document.getElementById('centerFilter'));
+      populateDropdown([...facilities].sort(), document.getElementById('facilityFilter'));
+
+      // 4) Create lunr index
+      lunrIndex = lunr(function() {
+        this.ref('id');
+        this.field('title');
+        this.field('description');
+        this.field('center_name');
+        this.field('facility_name');
+        eventsData.forEach((item, i) => {
+          item.id = String(i);
+          this.add(item);
+        });
+      });
+
+      // 5) Hook up event listeners
+      document.getElementById('searchBox').addEventListener('input', updateResults);
+      document.getElementById('centerFilter').addEventListener('change', updateResults);
+      document.getElementById('facilityFilter').addEventListener('change', updateResults);
+      document.getElementById('dateFrom').addEventListener('change', updateResults);
+      document.getElementById('dateTo').addEventListener('change', updateResults);
+
+      // Show everything initially
+      updateResults();
+    }
+
+    // Format "YYYY-MM-DD HH:MM:SS" into a JS Date object
+    function parseDate(dtStr) {
+      if (!dtStr) return null;
+      const isoStr = dtStr.replace(' ', 'T'); // e.g. "2025-01-06T09:00:00"
+      const d = new Date(isoStr);
+      return isNaN(d) ? null : d;
+    }
+
+    // Returns e.g. "Mon, Jan 6, 2025"
+    function formatDayDate(d) {
+      if (!d) return '';
+      const opts = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
+      return d.toLocaleDateString([], opts);
+    }
+
+    // Returns e.g. "9:00 AM – 10:00 AM" or just "9:00 AM" if no end
+    function formatTimeRange(start, end) {
+      if (!start) return '';
+      const timeOpts = { hour: 'numeric', minute: '2-digit', hour12: true };
+      const startStr = start.toLocaleTimeString([], timeOpts);
+      if (end) {
+        const endStr = end.toLocaleTimeString([], timeOpts);
+        return `${startStr} – ${endStr}`;
+      }
+      return startStr;
+    }
+
+    // Populate a <select> with given items
+    function populateDropdown(items, selectEl) {
+      items.forEach(val => {
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = val;
+        selectEl.appendChild(opt);
+      });
+    }
+
+    function updateResults() {
+      const query         = document.getElementById('searchBox').value.trim();
+      const centerChoice  = document.getElementById('centerFilter').value;
+      const facilityChoice= document.getElementById('facilityFilter').value;
+      const dateFromStr   = document.getElementById('dateFrom').value;
+      const dateToStr     = document.getElementById('dateTo').value;
+
+      // 1) lunr search if query, else all
+      let matchedIds = null;
+      if (query) {
+        const lunrResults = lunrIndex.search(query);
+        matchedIds = lunrResults.map(r => r.ref);
+      } else {
+        // no query => all
+        matchedIds = eventsData.map((_, i) => String(i));
+      }
+
+      let matchedEvents = matchedIds.map(id => eventsData.find(e => e.id === id));
+
+      // 2) Filter by center/facility
+      if (centerChoice) {
+        matchedEvents = matchedEvents.filter(e => e.center_name === centerChoice);
+      }
+      if (facilityChoice) {
+        matchedEvents = matchedEvents.filter(e => e.facility_name === facilityChoice);
+      }
+
+      // 3) Filter by date range
+      const fromDate = dateFromStr ? new Date(dateFromStr) : null;
+      const toDate   = dateToStr ? new Date(dateToStr) : null;
+      if (fromDate || toDate) {
+        matchedEvents = matchedEvents.filter(e => {
+          const d = parseDate(e.start_time);
+          if (!d) return false;
+          if (fromDate && d < fromDate) return false;
+          if (toDate && d > toDate) return false;
+          return true;
+        });
+      }
+
+      // 4) Sort by start_time ascending
+      matchedEvents.sort((a, b) => (a.start_time < b.start_time ? -1 : 1));
+
+      // 5) Render in the table
+      const tableBody = document.getElementById('resultsBody');
+      tableBody.innerHTML = '';
+      matchedEvents.forEach(ev => {
+        const tr = document.createElement('tr');
+
+        // Activity (title)
+        const tdActivity = document.createElement('td');
+        tdActivity.textContent = ev.title || '';
+        tr.appendChild(tdActivity);
+
+        // Day/Date
+        const tdDate = document.createElement('td');
+        tdDate.textContent = ev.dayDate || '';
+        tr.appendChild(tdDate);
+
+        // Time
+        const tdTime = document.createElement('td');
+        tdTime.textContent = ev.timeRange || '';
+        tr.appendChild(tdTime);
+
+        // Facility
+        const tdFacility = document.createElement('td');
+        tdFacility.textContent = ev.facility_name || '';
+        tr.appendChild(tdFacility);
+
+        tableBody.appendChild(tr);
+      });
+    }
+  </script>
+</body>
+</html>
