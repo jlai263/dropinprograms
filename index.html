@@ -12,33 +12,28 @@
   <header>
     <h1>Mississauga Drop-In Programs</h1>
     <a href="https://ca.apm.activecommunities.com/activemississauga/ActiveNet_Calendar?defaultCalendarId=1" 
-       class="button" target="_blank">
+       class="button"
+       target="_blank">
       View Official Calendar
     </a>
   </header>
 
   <main>
-    <!-- Filters Container -->
+    <!-- Filter row: search box, center selection, date range -->
     <div class="filters">
+      <!-- Text search -->
       <div class="filter-group">
         <label for="searchBox">Search:</label>
-        <input type="text" id="searchBox" placeholder="e.g. Fun Skate" />
+        <input type="text" id="searchBox" placeholder="e.g. hockey, skate, basketball..." />
       </div>
 
+      <!-- Button to open center modal -->
       <div class="filter-group">
-        <label for="centerFilter">Center:</label>
-        <select id="centerFilter">
-          <option value="">-- All Centers --</option>
-        </select>
+        <label>Centers:</label>
+        <button id="centerSelectBtn" class="button-secondary">Select Centers</button>
       </div>
 
-      <div class="filter-group">
-        <label for="facilityFilter">Facility:</label>
-        <select id="facilityFilter">
-          <option value="">-- All Facilities --</option>
-        </select>
-      </div>
-
+      <!-- Date filters -->
       <div class="filter-group">
         <label for="dateFrom">Start date:</label>
         <input type="date" id="dateFrom" />
@@ -50,6 +45,12 @@
       </div>
     </div>
 
+    <!-- Buttons to remove filters -->
+    <div class="filter-actions">
+      <button id="removeCentersBtn" class="button-secondary">Remove Centers</button>
+      <button id="removeAllBtn" class="button-secondary">Remove All Filters</button>
+    </div>
+
     <!-- Table for Results -->
     <table id="resultsTable">
       <thead>
@@ -57,12 +58,11 @@
           <th>Activity</th>
           <th>Day / Date</th>
           <th>Time</th>
+          <th>Center</th>
           <th>Facility</th>
         </tr>
       </thead>
-      <tbody id="resultsBody">
-        <!-- Populated dynamically in JS -->
-      </tbody>
+      <tbody id="resultsBody"></tbody>
     </table>
   </main>
 
@@ -70,11 +70,25 @@
     <p>Data courtesy of Mississauga ActiveNet</p>
   </footer>
 
+  <!-- Modal Overlay for Center Checkboxes -->
+  <div id="centerModal" class="modal-overlay">
+    <div class="modal-content">
+      <h2>Select Centers</h2>
+      <div id="centerCheckboxes" class="checkbox-list">
+        <!-- We'll fill this with checkboxes for each center -->
+      </div>
+      <div class="modal-buttons">
+        <button id="centerApplyBtn" class="button-secondary">Apply</button>
+        <button id="centerCancelBtn" class="button-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let eventsData = [];
     let lunrIndex = null;
+    let allCenters = [];
 
-    // Initialize on page load
     window.addEventListener('DOMContentLoaded', init);
 
     async function init() {
@@ -82,113 +96,163 @@
       const response = await fetch('events.json');
       eventsData = await response.json();
 
-      // 2) Precompute extra fields:
-      //    - dayDate (e.g. "Mon, Jan 6, 2025")
-      //    - timeRange (e.g. "9:00 AM – 10:00 AM")
-      eventsData.forEach((e) => {
-        const parsedStart = parseDate(e.start_time);
-        const parsedEnd   = parseDate(e.end_time);
-
-        e.dayDate   = formatDayDate(parsedStart);  // "Mon, Jan 6, 2025"
-        e.timeRange = formatTimeRange(parsedStart, parsedEnd); // "9:00 AM – 10:00 AM"
+      // 2) Precompute dayDate/timeRange for display
+      eventsData.forEach((e, i) => {
+        e.id = String(i); // assign id if not yet assigned
+        const startDate = parseDate(e.start_time);
+        const endDate   = parseDate(e.end_time);
+        e.dayDate   = formatDayDate(startDate);     // e.g. "Mon, Jan 6, 2025"
+        e.timeRange = formatTimeRange(startDate, endDate); // e.g. "9:00 AM – 10:00 AM"
+        // e.description is presumably in your JSON for the tooltip
       });
 
-      // 3) Unique centers/facilities
-      const centers = new Set();
-      const facilities = new Set();
+      // 3) Collect unique centers
+      const centerSet = new Set();
       eventsData.forEach(e => {
-        if (e.center_name) centers.add(e.center_name.trim());
-        if (e.facility_name) facilities.add(e.facility_name.trim());
+        if (e.center_name) centerSet.add(e.center_name.trim());
       });
-      populateDropdown([...centers].sort(), document.getElementById('centerFilter'));
-      populateDropdown([...facilities].sort(), document.getElementById('facilityFilter'));
+      allCenters = [...centerSet].sort();
 
-      // 4) Create lunr index
+      // 4) Build lunr index
       lunrIndex = lunr(function() {
         this.ref('id');
         this.field('title');
-        this.field('description');
+        this.field('description');  // so searching picks up the description text
         this.field('center_name');
-        this.field('facility_name');
-        eventsData.forEach((item, i) => {
-          item.id = String(i);
+
+        eventsData.forEach(item => {
           this.add(item);
         });
       });
 
-      // 5) Hook up event listeners
+      // 5) Build center checkboxes in modal
+      buildCenterCheckboxes(allCenters);
+
+      // 6) Hook up event listeners
       document.getElementById('searchBox').addEventListener('input', updateResults);
-      document.getElementById('centerFilter').addEventListener('change', updateResults);
-      document.getElementById('facilityFilter').addEventListener('change', updateResults);
       document.getElementById('dateFrom').addEventListener('change', updateResults);
       document.getElementById('dateTo').addEventListener('change', updateResults);
 
-      // Show everything initially
+      const centerSelectBtn = document.getElementById('centerSelectBtn');
+      centerSelectBtn.addEventListener('click', openCenterModal);
+      document.getElementById('centerApplyBtn').addEventListener('click', applyCenterSelection);
+      document.getElementById('centerCancelBtn').addEventListener('click', closeCenterModal);
+
+      // Remove filters buttons
+      document.getElementById('removeCentersBtn').addEventListener('click', removeCenters);
+      document.getElementById('removeAllBtn').addEventListener('click', removeAllFilters);
+
+      // Show results
       updateResults();
     }
 
-    // Format "YYYY-MM-DD HH:MM:SS" into a JS Date object
     function parseDate(dtStr) {
       if (!dtStr) return null;
-      const isoStr = dtStr.replace(' ', 'T'); // e.g. "2025-01-06T09:00:00"
+      const isoStr = dtStr.replace(' ', 'T');
       const d = new Date(isoStr);
       return isNaN(d) ? null : d;
     }
 
-    // Returns e.g. "Mon, Jan 6, 2025"
     function formatDayDate(d) {
       if (!d) return '';
       const opts = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
       return d.toLocaleDateString([], opts);
     }
 
-    // Returns e.g. "9:00 AM – 10:00 AM" or just "9:00 AM" if no end
     function formatTimeRange(start, end) {
       if (!start) return '';
       const timeOpts = { hour: 'numeric', minute: '2-digit', hour12: true };
       const startStr = start.toLocaleTimeString([], timeOpts);
-      if (end) {
-        const endStr = end.toLocaleTimeString([], timeOpts);
-        return `${startStr} – ${endStr}`;
-      }
-      return startStr;
+      if (!end) return startStr;
+      const endStr = end.toLocaleTimeString([], timeOpts);
+      return `${startStr} – ${endStr}`;
     }
 
-    // Populate a <select> with given items
-    function populateDropdown(items, selectEl) {
-      items.forEach(val => {
-        const opt = document.createElement('option');
-        opt.value = val;
-        opt.textContent = val;
-        selectEl.appendChild(opt);
+    // Build checkboxes for centers
+    function buildCenterCheckboxes(centers) {
+      const container = document.getElementById('centerCheckboxes');
+      container.innerHTML = '';
+      centers.forEach(c => {
+        const label = document.createElement('label');
+        label.classList.add('checkbox-label');
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = c;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(c));
+
+        container.appendChild(label);
       });
     }
 
-    function updateResults() {
-      const query         = document.getElementById('searchBox').value.trim();
-      const centerChoice  = document.getElementById('centerFilter').value;
-      const facilityChoice= document.getElementById('facilityFilter').value;
-      const dateFromStr   = document.getElementById('dateFrom').value;
-      const dateToStr     = document.getElementById('dateTo').value;
+    function openCenterModal() {
+      document.getElementById('centerModal').style.display = 'flex';
+    }
+    function closeCenterModal() {
+      document.getElementById('centerModal').style.display = 'none';
+    }
+    function applyCenterSelection() {
+      closeCenterModal();
+      updateResults();
+    }
 
-      // 1) lunr search if query, else all
-      let matchedIds = null;
+    // Helper to see which center checkboxes are checked
+    function getSelectedCenters() {
+      const checkboxes = document.querySelectorAll('#centerCheckboxes input[type="checkbox"]');
+      const selected = [];
+      checkboxes.forEach(cb => {
+        if (cb.checked) selected.push(cb.value);
+      });
+      return selected;
+    }
+
+    // Clear all center checkboxes
+    function uncheckAllCenters() {
+      const checkboxes = document.querySelectorAll('#centerCheckboxes input[type="checkbox"]');
+      checkboxes.forEach(cb => { cb.checked = false; });
+    }
+
+    // Button to remove only center selection
+    function removeCenters() {
+      uncheckAllCenters();
+      updateResults();
+    }
+
+    // Button to remove ALL filters: search, centers, date range
+    function removeAllFilters() {
+      // Clear search box
+      document.getElementById('searchBox').value = '';
+      // Clear date range
+      document.getElementById('dateFrom').value = '';
+      document.getElementById('dateTo').value = '';
+      // Uncheck centers
+      uncheckAllCenters();
+      // Update
+      updateResults();
+    }
+
+    // Main filtering logic
+    function updateResults() {
+      const query = document.getElementById('searchBox').value.trim();
+      const dateFromStr = document.getElementById('dateFrom').value;
+      const dateToStr   = document.getElementById('dateTo').value;
+
+      // 1) If query present, lunr search, else all
+      let matchedIds;
       if (query) {
-        const lunrResults = lunrIndex.search(query);
-        matchedIds = lunrResults.map(r => r.ref);
+        const results = lunrIndex.search(query);
+        matchedIds = results.map(r => r.ref);
       } else {
-        // no query => all
-        matchedIds = eventsData.map((_, i) => String(i));
+        matchedIds = eventsData.map(e => e.id);
       }
 
       let matchedEvents = matchedIds.map(id => eventsData.find(e => e.id === id));
 
-      // 2) Filter by center/facility
-      if (centerChoice) {
-        matchedEvents = matchedEvents.filter(e => e.center_name === centerChoice);
-      }
-      if (facilityChoice) {
-        matchedEvents = matchedEvents.filter(e => e.facility_name === facilityChoice);
+      // 2) Filter by selected centers
+      const chosenCenters = getSelectedCenters();
+      if (chosenCenters.length > 0) {
+        matchedEvents = matchedEvents.filter(e => chosenCenters.includes(e.center_name));
       }
 
       // 3) Filter by date range
@@ -204,29 +268,46 @@
         });
       }
 
-      // 4) Sort by start_time ascending
+      // 4) Sort ascending by start_time
       matchedEvents.sort((a, b) => (a.start_time < b.start_time ? -1 : 1));
 
-      // 5) Render in the table
+      // 5) Render table
       const tableBody = document.getElementById('resultsBody');
       tableBody.innerHTML = '';
+
       matchedEvents.forEach(ev => {
         const tr = document.createElement('tr');
 
-        // Activity (title)
+        // Activity column with a question mark for the tooltip
         const tdActivity = document.createElement('td');
-        tdActivity.textContent = ev.title || '';
+        const activitySpan = document.createElement('span');
+        activitySpan.textContent = ev.title || '';
+
+        // A question mark icon with a tooltip on hover
+        // We'll store the description in data-tooltip
+        const tooltipIcon = document.createElement('span');
+        tooltipIcon.classList.add('tooltip-icon');
+        tooltipIcon.setAttribute('data-tooltip', ev.description || 'No description');
+        tooltipIcon.textContent = ' ?';  // add a space before ?
+
+        tdActivity.appendChild(activitySpan);
+        tdActivity.appendChild(tooltipIcon);
         tr.appendChild(tdActivity);
 
-        // Day/Date
+        // Day / Date
         const tdDate = document.createElement('td');
-        tdDate.textContent = ev.dayDate || '';
+        tdDate.textContent = ev.dayDate;
         tr.appendChild(tdDate);
 
         // Time
         const tdTime = document.createElement('td');
-        tdTime.textContent = ev.timeRange || '';
+        tdTime.textContent = ev.timeRange;
         tr.appendChild(tdTime);
+
+        // Center
+        const tdCenter = document.createElement('td');
+        tdCenter.textContent = ev.center_name || '';
+        tr.appendChild(tdCenter);
 
         // Facility
         const tdFacility = document.createElement('td');
